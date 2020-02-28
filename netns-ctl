@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+
+# A tool create a new network namespace. The new namespace will have:
+#
+# 1. a lo interface which has IP 127.0.0.1
+# 2. a eth0 interface which has an IP address
+# 3. a resolv.conf file
+#
+# This script configures the host to set up iptables rules to perform NAT
+# for the namespace. So the namespace will have a standalone TCP/IP stack.
+
+set -x
+
+show_usage() {
+    cat<<EOF
+Usage: $0 [-d NAMESERVER] [-n NS] [-a ADDRESS]
+
+Options:
+    -n NS               Set name of the namespace
+                        Default value is 'vpn'
+
+    -a ADDRESS          Set IP address and mask for eth0 in the namespace
+                        Default value is '192.168.100.2/24'
+
+    -g GATEWAY          Set IP address of the gateway
+                        Default value is '192.168.100.1/24'
+
+    -d DNS              Set nameserver for the namespace
+                        Default value is '114.114.114.114'
+
+    -c                  Clean up
+
+    -s                  Launch a new shell session in the namespace
+EOF
+}
+
+# Parse arguments
+NAME=vpn
+DNS=114.114.114.114
+ADDRESS=192.168.100.2/24
+GATEWAY=192.168.100.1/24
+CLEAN=0
+SHELL=0
+
+while getopts ":d:n:a:cs" options; do
+    case "${options}" in
+        d)
+            DNS=${OPTARG}
+            ;;
+        a)
+            ADDRESS=${OPTARG}
+            ;;
+        g)
+            GATEWAY=${OPTARG}
+            ;;
+        n)
+            NAME=${OPTARG}
+            ;;
+        c)
+            CLEAN=1
+            ;;
+        s)
+            SHELL=1
+            ;;
+        *)
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+OUT_NAME=v-${NAME}-out
+IN_NAME=v-${NAME}-in
+
+if [ "$CLEAN" = "1" ]; then
+    # delete the iptables rule
+    iptables -t nat -D POSTROUTING -s ${ADDRESS} ! -d ${GATEWAY} -m comment --comment "for namespace ${NAME}" -j MASQUERADE
+
+    # move the interface outof namespace
+    ip netns exec ${NAME} ip link set ${IN_NAME} netns 1
+
+    # delete the interface
+    ip link delete ${OUT_NAME}
+
+    # delete the namespace
+    ip netns delete ${NAME}
+
+    # delete resolv.conf
+    rm -rf /etc/netns/${NAME}
+
+elif [ "$SHELL" = "1" ]; then
+    if [ "$UID" = 0 ]; then
+        exec ip netns exec ${NAME} /bin/bash
+    else
+        exec sudo ip netns exec ${NAME} su - $(whoami)
+    fi
+else
+    # create namespaces
+    ip netns add ${NAME}
+
+    # create the interfaces
+    ip link add ${OUT_NAME} type veth peer name ${IN_NAME}
+    ip link set ${IN_NAME} netns ${NAME}
+
+    # assign IP addresses
+    ip addr add ${GATEWAY} dev ${OUT_NAME}
+    ip link set ${OUT_NAME} up
+    ip netns exec ${NAME} ip addr add ${ADDRESS} dev ${IN_NAME}
+    ip netns exec ${NAME} ip link set ${IN_NAME} up
+    ip netns exec ${NAME} ip addr add 127.0.0.1/8 dev lo
+    ip netns exec ${NAME} ip link set lo up
+
+    # sysctl forward
+    sysctl -w net.ipv4.conf.all.forwarding=1
+    sysctl -w net.ipv4.ip_forward=1
+
+    # set route
+    GATEWAY_IP=${GATEWAY/\/*/}
+    ip netns exec ${NAME} route add default gw ${GATEWAY_IP}
+
+    # iptables set nat
+    iptables -t nat -A POSTROUTING -s ${ADDRESS} ! -d ${GATEWAY} -m comment --comment "for namespace ${NAME}" -j MASQUERADE
+
+    # create resolv.conf
+    mkdir -p /etc/netns/${NAME}
+    echo "nameserver ${DNS}" > /etc/netns/${NAME}/resolv.conf
+fi
+
