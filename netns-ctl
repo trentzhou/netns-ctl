@@ -41,6 +41,8 @@ ADDRESS=192.168.100.2/24
 GATEWAY=192.168.100.1/24
 CLEAN=0
 SHELL=0
+ROUTE_TABLE=100
+RULE_ID=100
 
 while getopts ":d:n:a:cs" options; do
     case "${options}" in
@@ -72,9 +74,20 @@ done
 OUT_NAME=v-${NAME}-out
 IN_NAME=v-${NAME}-in
 
+# Get device for the default route
+DEFAULT_DEV=$(ip route |grep default | tail -1 | sed 's/.*dev \(\w\+\).*/\1/')
+SYSTEM_DEFAULT_GW=$(ip route |grep default | tail -1 | sed 's/.*via \([0-9.]\+\).*/\1/')
+
 if [ "$CLEAN" = "1" ]; then
     # delete the iptables rule
     iptables -t nat -D POSTROUTING -s ${ADDRESS} ! -d ${GATEWAY} -m comment --comment "for namespace ${NAME}" -j MASQUERADE
+
+    # delete rule
+    ip rule del from ${ADDRESS}
+
+    # delete route table
+    ip route del default table ${ROUTE_TABLE}
+    ip route del ${ADDRESS/\/*/\/32} table ${ROUTE_TABLE}
 
     # move the interface outof namespace
     ip netns exec ${NAME} ip link set ${IN_NAME} netns 1
@@ -87,7 +100,6 @@ if [ "$CLEAN" = "1" ]; then
 
     # delete resolv.conf
     rm -rf /etc/netns/${NAME}
-
 elif [ "$SHELL" = "1" ]; then
     if [ "$UID" = 0 ]; then
         exec ip netns exec ${NAME} /bin/bash
@@ -124,5 +136,12 @@ else
     # create resolv.conf
     mkdir -p /etc/netns/${NAME}
     echo "nameserver ${DNS}" > /etc/netns/${NAME}/resolv.conf
+
+    # create a route table
+    ip route add default via ${SYSTEM_DEFAULT_GW} table ${ROUTE_TABLE}
+    ip route add ${ADDRESS/\/*/\/32} dev ${OUT_NAME} src ${GATEWAY_IP} table ${ROUTE_TABLE}
+    
+    # create rule
+    ip rule add from ${ADDRESS} lookup ${ROUTE_TABLE}
 fi
 
