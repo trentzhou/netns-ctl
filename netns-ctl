@@ -30,6 +30,8 @@ Options:
 
     -c                  Clean up
 
+    -r                  Reset
+
     -s                  Launch a new shell session in the namespace
 EOF
 }
@@ -40,11 +42,11 @@ DNS=114.114.114.114
 ADDRESS=192.168.100.2/24
 GATEWAY=192.168.100.1/24
 CLEAN=0
-SHELL=0
+ENTER_SHELL=0
 ROUTE_TABLE=100
 RULE_ID=100
 
-while getopts ":d:n:a:cs" options; do
+while getopts ":d:n:a:crs" options; do
     case "${options}" in
         d)
             DNS=${OPTARG}
@@ -61,8 +63,11 @@ while getopts ":d:n:a:cs" options; do
         c)
             CLEAN=1
             ;;
+        r)
+            RESET=1
+            ;;
         s)
-            SHELL=1
+            ENTER_SHELL=1
             ;;
         *)
             show_usage
@@ -78,7 +83,7 @@ IN_NAME=v-${NAME}-in
 DEFAULT_DEV=$(ip route |grep default | tail -1 | sed 's/.*dev \(\w\+\).*/\1/')
 SYSTEM_DEFAULT_GW=$(ip route |grep default | tail -1 | sed 's/.*via \([0-9.]\+\).*/\1/')
 
-if [ "$CLEAN" = "1" ]; then
+function clean() {
     # delete the iptables rule
     iptables -t nat -D POSTROUTING -s ${ADDRESS} ! -d ${GATEWAY} -m comment --comment "for namespace ${NAME}" -j MASQUERADE
 
@@ -100,13 +105,9 @@ if [ "$CLEAN" = "1" ]; then
 
     # delete resolv.conf
     rm -rf /etc/netns/${NAME}
-elif [ "$SHELL" = "1" ]; then
-    if [ "$UID" = 0 ]; then
-        exec ip netns exec ${NAME} /bin/bash
-    else
-        exec sudo ip netns exec ${NAME} su - $(whoami)
-    fi
-else
+}
+
+function setup() {
     # create namespaces
     ip netns add ${NAME}
 
@@ -143,5 +144,26 @@ else
     
     # create rule
     ip rule add from ${ADDRESS} lookup ${ROUTE_TABLE}
+}
+
+function enter_shell() {
+    if [ "$UID" = 0 ]; then
+        exec ip netns exec ${NAME} /bin/bash
+    else
+        exec sudo ip netns exec ${NAME} su - $(whoami)
+    fi
+}
+
+
+if [ "$CLEAN" = "1" ]; then
+    clean
+elif [ "$ENTER_SHELL" = "1" ]; then
+    if [ "$RESET" = "1" ]; then
+        clean
+        setup
+    fi
+    enter_shell
+else
+    setup
 fi
 
