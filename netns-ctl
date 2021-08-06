@@ -9,7 +9,7 @@
 # This script configures the host to set up iptables rules to perform NAT
 # for the namespace. So the namespace will have a standalone TCP/IP stack.
 
-set -x
+# set -x
 
 show_usage() {
     cat<<EOF
@@ -146,12 +146,24 @@ function setup() {
     ip rule add from ${ADDRESS} lookup ${ROUTE_TABLE}
 }
 
+function save_env() {
+    filename=`mktemp`
+    echo $filename
+    while IFS='=' read -r -d '' n v; do
+        printf "export %s='%s'\n" "$n" "$v" >> $filename
+    done < <(env -0)
+}
+
 function enter_shell() {
+    filename=`save_env`
+
+    echo "The environment is saved in $filename"
     if [ "$UID" = 0 ]; then
-        exec ip netns exec ${NAME} /bin/bash
+        ip netns exec ${NAME} /bin/bash
     else
-        exec sudo ip netns exec ${NAME} su - $(whoami)
+        sudo ip netns exec ${NAME} su - $(whoami)
     fi
+    rm -f $filename
 }
 
 
